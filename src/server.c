@@ -1,5 +1,7 @@
 #include "snake.h"
 
+void send_game_state(int client_socket);
+
 typedef struct {
     int socket;
     int player_id;
@@ -228,22 +230,17 @@ void* game_loop(void* arg) {
                         update_snake(&game.players[i]);
                     }
                 }
-                /*
-                int alive_count = 0;
-                for (int i = 0; i < game.num_players; i++) {
-                    if (game.players[i].alive) alive_count++;
-                }
-
-                if (alive_count == 0) {
-                    game.active = 0;
-                    game.game_over = 1;
-                    fprintf(stderr, "[SERVER] Žiaden živý hadík! KONIEC HRY!\n");
-                }*/
             }
         }
 
         pthread_mutex_unlock(&game_mutex);
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (clients[i].in_use) {
+                send_game_state(clients[i].socket);
+            }
+        }
         usleep(1000000 / FPS);
+
     }
     return NULL;
 }

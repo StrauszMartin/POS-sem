@@ -195,7 +195,7 @@ void receive_game_state() {
     if (sock < 0) return;
 
     char buffer[BUFFER_SIZE];
-    int n = recv(sock, buffer, BUFFER_SIZE - 1, MSG_DONTWAIT);
+    int n = recv(sock, buffer, BUFFER_SIZE - 1, 0);
     if (n > 0) {
         buffer[n] = '\0';
         parse_game_state(buffer);
