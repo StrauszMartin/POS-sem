@@ -1,10 +1,9 @@
 #include "snake.h"
 
-#define MAX_CLIENTS 10
-
 typedef struct {
     int socket;
     int player_id;
+    int in_use;
     char name[50];
 } Client;
 
@@ -49,7 +48,7 @@ void init_game(int width, int height, GameMode mode, int time_limit, WorldType w
     game.mode = mode;
     game.time_limit = time_limit;
     game.elapsed_time = 0;
-    game.active = 1;
+    game.active = 0;
     game.game_over = 0;
     game.world_type = world_type;
     game.start_time = time(NULL);
@@ -99,6 +98,11 @@ void init_snake(int player_id, const char* name) {
     }
 
     game.num_players++;
+    if (game.num_players == 1) {
+        game.active = 1;
+        game.game_over = 0;
+        game.start_time = time(NULL);
+    }
     fprintf(stderr, "[SERVER] Hadík '%s' vytvorený (ID: %d)\n", name, player_id);
 }
 
@@ -149,7 +153,7 @@ void update_snake(Player* p) {
         if (new_x >= game.width) new_x = 0;
         if (new_y < 0) new_y = game.height - 1;
         if (new_y >= game.height) new_y = 0;
-    } else {
+    } else { //tu niekde bude treba zmenit to ze sa zaobrazi na druhej strane ale este si to premyslim
         if (new_x < 0 || new_x >= game.width || new_y < 0 || new_y >= game.height) {
             p->alive = 0;
             fprintf(stderr, "[SERVER] Hadík '%s' narazil do okraja!\n", p->name);
@@ -204,20 +208,27 @@ void* game_loop(void* arg) {
     while (running) {
         pthread_mutex_lock(&game_mutex);
 
+        if (!game.active || game.num_players == 0) {
+            pthread_mutex_unlock(&game_mutex);
+            usleep(1000000 / FPS);
+            continue;
+        }
+
         if (game.active) {
             game.elapsed_time = (int)(time(NULL) - game.start_time);
 
             if (game.mode == MODE_TIMED && game.elapsed_time >= game.time_limit) {
                 game.active = 0;
                 game.game_over = 1;
-                fprintf(stderr, "[SERVER] Čas vypršal! KONIEC HRY!\n");
+                fprintf(stderr, "[SERVER] Čas vypršal! KONIEC HRY!\n"); 
+                //vypisat stats
             } else {
                 for (int i = 0; i < game.num_players; i++) {
                     if (game.players[i].alive) {
                         update_snake(&game.players[i]);
                     }
                 }
-
+                /*
                 int alive_count = 0;
                 for (int i = 0; i < game.num_players; i++) {
                     if (game.players[i].alive) alive_count++;
@@ -227,7 +238,7 @@ void* game_loop(void* arg) {
                     game.active = 0;
                     game.game_over = 1;
                     fprintf(stderr, "[SERVER] Žiaden živý hadík! KONIEC HRY!\n");
-                }
+                }*/
             }
         }
 
@@ -284,6 +295,12 @@ void handle_client_message(const char* buffer) {
         char name[50];
         sscanf(buffer, "PLAYER|%49[^|]", name);
         init_snake(game.num_players, name);
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].in_use) {
+            send_game_state(clients[i].socket);
+        }
+    }
     } else if (strncmp(buffer, "MOVE", 4) == 0) {
         int pid, dir;
         sscanf(buffer, "MOVE|%d|%d", &pid, &dir);
@@ -318,8 +335,21 @@ void* client_handler(void* arg) {
         send_game_state(client_socket);
     }
 
-    close(client_socket);
-    fprintf(stderr, "[SERVER] Klient odpojený\n");
+        close(client_socket);
+
+    pthread_mutex_lock(&game_mutex);
+    // označ slot ako voľný a zníž počítadlo klientov
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].socket == client_socket && clients[i].in_use) {
+            clients[i].in_use = 0;
+            clients[i].socket = -1;
+            if (num_clients > 0) num_clients--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&game_mutex);
+
+    fprintf(stderr, "[SERVER] Klient odpojený, aktívni klienti: %d\n", num_clients);
     return NULL;
 }
 
@@ -327,6 +357,11 @@ int main() {
     fprintf(stderr, "SERVER HADIK - port %d\n", PORT);
 
     srand(time(NULL));
+    
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        clients[i].socket = -1;
+        clients[i].in_use = 0;
+    }
 
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
@@ -358,22 +393,63 @@ int main() {
     pthread_create(&game_thread, NULL, game_loop, NULL);
 
     while (running) {
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
-        int client_socket = accept(server_sock, (struct sockaddr*)&client_addr, &client_len);
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    int client_socket = accept(server_sock, (struct sockaddr*)&client_addr, &client_len);
 
-        if (client_socket < 0) continue;
+    if (client_socket < 0) continue;
 
-        fprintf(stderr, "[SERVER] Klient sa pripojil: %s:%d\n",
-                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+    pthread_mutex_lock(&game_mutex);
 
-        int* sock = malloc(sizeof(int));
-        *sock = client_socket;
+    if (num_clients >= MAX_CLIENTS) {
+        // server je plný – pošli jednoduchú správu a zavri socket
+        const char *full_msg = "SERVER_FULL\n";
+        send(client_socket, full_msg, strlen(full_msg), 0);
+        close(client_socket);
+        pthread_mutex_unlock(&game_mutex);
 
-        pthread_t thread;
-        pthread_create(&thread, NULL, client_handler, sock);
-        pthread_detach(thread);
+        fprintf(stderr, "[SERVER] Pripojenie odmietnuté, MAX_CLIENTS=%d\n", MAX_CLIENTS);
+        continue;
     }
+
+    // nájdi voľný slot v poli clients
+    int idx = -1;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (!clients[i].in_use) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx == -1) {
+        // nemalo by sa stať, ale pre istotu
+        const char *full_msg = "SERVER_FULL\n";
+        send(client_socket, full_msg, strlen(full_msg), 0);
+        close(client_socket);
+        pthread_mutex_unlock(&game_mutex);
+        continue;
+    }
+
+    clients[idx].socket = client_socket;
+    clients[idx].in_use = 1;
+    num_clients++;
+
+    fprintf(stderr, "[SERVER] Klient #%d sa pripojil: %s:%d (aktívni: %d)\n",
+            idx,
+            inet_ntoa(client_addr.sin_addr),
+            ntohs(client_addr.sin_port),
+            num_clients);
+
+    pthread_mutex_unlock(&game_mutex);
+
+    int* sock = malloc(sizeof(int));
+    *sock = client_socket;
+
+    pthread_t thread;
+    pthread_create(&thread, NULL, client_handler, sock);
+    pthread_detach(thread);
+}
+
 
     running = 0;
     pthread_join(game_thread, NULL);

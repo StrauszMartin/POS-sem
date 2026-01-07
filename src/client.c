@@ -48,6 +48,40 @@ void clear_world() {
             world[y][x] = ' ';
 }
 
+void render_players_info() {
+    printf("Max hráčov: %d\n", MAX_CLIENTS);
+
+    // pre každý možný slot hráča
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (i < game_state.num_players) {
+            Player *p = &game_state.players[i];
+
+            if (!p->alive) {
+                printf("Hráč %s je mŕtvy. Skóre: %d\n", p->name, p->score);
+            } else {
+                printf("Meno: %s\n", p->name);
+                printf("ID: %d\n", p->id);
+                printf("Skóre: %d\n", p->score);
+            }
+        } else {
+            // slot bez hráča (nikdy nebol alebo sa odpojil)
+            printf("______________________________________\n");
+        }
+
+        printf("\n");
+    }
+
+    // zvýraznenie seba samého (ak chceš extra riadok)
+    if (player_id >= 0 && player_id < game_state.num_players) {
+        Player *me = &game_state.players[player_id];
+        printf("== TY ==\n");
+        printf("Meno: %s | ID: %d | Skóre: %d\n\n",
+               me->name, me->id, me->score);
+    }
+}
+
+
+
 void render_world() {
     clear_world();
 
@@ -287,6 +321,8 @@ void game_loop() {
 
     while (in_game && game_active) {
         clear_screen();
+        receive_game_state();
+        render_players_info();
         render_world();
 
         if (game_state.num_players > player_id) {

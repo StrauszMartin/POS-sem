@@ -19,6 +19,7 @@
 #define INITIAL_SNAKE_LEN 3
 #define FPS 5
 #define MAX_OBSTACLES 50
+#define MAX_CLIENTS 4
 
 typedef enum {
     MSG_NEW_GAME = 1,
