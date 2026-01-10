@@ -93,42 +93,17 @@ void render_players_info() {
 
 
 void render_world() {
-    clear_world();
-
-    for (int i = 0; i < game_state.num_obstacles; i++) {
-        int ox = game_state.obstacles[i][0];
-        int oy = game_state.obstacles[i][1];
-        if (ox >= 0 && ox < WORLD_WIDTH && oy >= 0 && oy < WORLD_HEIGHT)
-            world[oy][ox] = '#';
-    }
-
-    for (int i = 0; i < game_state.num_players; i++) {
-        Player* p = &game_state.players[i];
-        if (!p->alive) continue;
-
-        if (p->head_x >= 0 && p->head_x < WORLD_WIDTH &&
-            p->head_y >= 0 && p->head_y < WORLD_HEIGHT)
-            world[p->head_y][p->head_x] = '@';
-
-        for (int j = 1; j < p->body_len; j++) {
-            if (p->body_x[j] >= 0 && p->body_x[j] < WORLD_WIDTH &&
-                p->body_y[j] >= 0 && p->body_y[j] < WORLD_HEIGHT)
-                world[p->body_y[j]][p->body_x[j]] = '~';
-        }
-    }
-
-    if (game_state.fruit_x >= 0 && game_state.fruit_x < WORLD_WIDTH &&
-        game_state.fruit_y >= 0 && game_state.fruit_y < WORLD_HEIGHT)
-        world[game_state.fruit_y][game_state.fruit_x] = '*';
-
     printf("\n╔");
     for (int x = 0; x < WORLD_WIDTH; x++) printf("═");
     printf("╗\n");
 
     for (int y = 0; y < WORLD_HEIGHT; y++) {
         printf("║");
-        for (int x = 0; x < WORLD_WIDTH; x++)
-            printf("%c", world[y][x]);
+        for (int x = 0; x < WORLD_WIDTH; x++) {
+            char c = world[y][x];
+            if (c == '.') c = ' ';
+            printf("%c", c);
+        }
         printf("║\n");
     }
 
@@ -137,13 +112,20 @@ void render_world() {
     printf("╝\n");
 }
 
+static const char* skip_next_field(const char* p) {
+    const char* q = strchr(p, '|');
+    return q ? (q + 1) : NULL;
+}
+
 void parse_game_state(const char* buffer) {
     if (strncmp(buffer, "STATE", 5) != 0) return;
 
     int parts[12];
-    sscanf(buffer, "STATE|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|",
-           &parts[0], &parts[1], &parts[2], &parts[3], &parts[4], &parts[5],
-           &parts[6], &parts[7], &parts[8], &parts[9], &parts[10], &parts[11]);
+    if (sscanf(buffer, "STATE|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|",
+&parts[0], &parts[1], &parts[2], &parts[3], &parts[4], &parts[5],
+&parts[6], &parts[7], &parts[8], &parts[9], &parts[10], &parts[11]) != 12) {
+        return;
+    }
 
     game_state.id = parts[0];
     game_state.width = parts[1];
@@ -158,47 +140,79 @@ void parse_game_state(const char* buffer) {
     game_state.world_type = parts[10];
     game_state.elapsed_time = parts[11];
 
+    // posuň ptr ZA 12. číselné pole (elapsed_time) a jeho '|'
     const char* ptr = strchr(buffer, '|');
-    for (int i = 0; i < 12 && ptr; i++)
-        ptr = strchr(ptr + 1, '|');
-    if (ptr) ptr++;
+    for (int i = 0; i < 12 && ptr; i++) ptr = strchr(ptr + 1, '|');
+    if (!ptr) return;
+    ptr++; // teraz ptr ukazuje na začiatok ďalšieho segmentu (M| alebo O| alebo P|)
 
-    game_state.num_obstacles = 0;
-    while (ptr && strncmp(ptr, "O|", 2) == 0 && game_state.num_obstacles < MAX_OBSTACLES) {
-        int ox, oy;
-        sscanf(ptr, "O|%d|%d|", &ox, &oy);
-        game_state.obstacles[game_state.num_obstacles][0] = ox;
-        game_state.obstacles[game_state.num_obstacles][1] = oy;
-        game_state.num_obstacles++;
+    // --- M|<mapa>| (800 znakov) ---
+    // Vymaž world a naplň ho mapou zo servera.
+    clear_world();
 
-        ptr = strchr(ptr + 1, '|');
-        if (ptr) ptr = strchr(ptr + 1, '|');
-        if (ptr) ptr = strchr(ptr + 1, '|');
-        if (ptr) ptr++;
+    if (ptr && strncmp(ptr, "M|", 2) == 0) {
+        ptr += 2;
+        const char* end = strchr(ptr, '|');
+        if (end) {
+            int len = (int)(end - ptr);
+            int expected = game_state.width * game_state.height; // typicky 800
+
+            if (len >= expected) {
+                for (int y = 0; y < game_state.height; y++) {
+                    for (int x = 0; x < game_state.width; x++) {
+                        char c = ptr[y * game_state.width + x];
+                        if (c == '.') c = ' ';
+                        world[y][x] = c;
+                    }
+                }
+            }
+
+            ptr = end + 1; // za ukončovací '|'
+        } else {
+            return;
+        }
     }
 
-    game_state.num_players = 0;
-    while (ptr && strncmp(ptr, "P|", 2) == 0 && game_state.num_players < 10) {
-        Player* p = &game_state.players[game_state.num_players];
+    // --- O|x|y| ... ---
+    int obs_count = 0;
+    while (ptr && strncmp(ptr, "O|", 2) == 0 && obs_count < MAX_OBSTACLES) {
+        int ox, oy;
+        if (sscanf(ptr, "O|%d|%d|", &ox, &oy) == 2) {
+            game_state.obstacles[obs_count][0] = ox;
+            game_state.obstacles[obs_count][1] = oy;
+            obs_count++;
+        }
+
+        // preskoč 3 polia: O|x|y|
+        ptr = skip_next_field(ptr); // za "O"
+        ptr = ptr ? skip_next_field(ptr) : NULL; // za x
+        ptr = ptr ? skip_next_field(ptr) : NULL; // za y
+    }
+    game_state.num_obstacles = obs_count;
+
+    // --- P|id|name|alive|score|hx|hy|blen|dir| ... ---
+    int pl_count = 0;
+    while (ptr && strncmp(ptr, "P|", 2) == 0 && pl_count < 10) {
+        Player* p = &game_state.players[pl_count];
         int id, alive, score, hx, hy, blen, dir;
 
-        sscanf(ptr, "P|%d|%49[^|]|%d|%d|%d|%d|%d|%d|",
-               &id, p->name, &alive, &score, &hx, &hy, &blen, &dir);
+        if (sscanf(ptr, "P|%d|%49[^|]|%d|%d|%d|%d|%d|%d|",
+        &id, p->name, &alive, &score, &hx, &hy, &blen, &dir) == 8) {
+            p->id = id;
+            p->alive = alive;
+            p->score = score;
+            p->head_x = hx;
+            p->head_y = hy;
+            p->body_len = blen;
+            p->direction = (Direction)dir;
+            pl_count++;
+        }
 
-        p->id = id;
-        p->alive = alive;
-        p->score = score;
-        p->head_x = hx;
-        p->head_y = hy;
-        p->body_len = blen;
-        p->direction = (Direction)dir;
-
-        game_state.num_players++;
-
-        for (int k = 0; k < 9 && ptr; k++)
-            ptr = strchr(ptr + 1, '|');
-        if (ptr) ptr++;
+        // preskoč 9 polí: P|id|name|alive|score|hx|hy|blen|dir|
+        ptr = skip_next_field(ptr); // za P
+        for (int k = 0; k < 8 && ptr; k++) ptr = skip_next_field(ptr);
     }
+    game_state.num_players = pl_count;
 }
 
 void receive_game_state() {

@@ -87,8 +87,8 @@ void init_game(int width, int height, GameMode mode, int time_limit, WorldType w
             width, height, mode, world_type);
 }
 
-void init_snake(int player_id, const char* name) {
-    if (game.num_players >= 10) return;
+int init_snake(int player_id, const char* name) {
+    if (game.num_players >= 10) return -1;
 
     Player* p = &game.players[game.num_players];
     p->id = player_id;
@@ -113,6 +113,7 @@ void init_snake(int player_id, const char* name) {
         game.start_time = time(NULL);
     }
     fprintf(stderr, "[SERVER] Hadík '%s' vytvorený (ID: %d)\n", name, player_id);
+    return player_id;
 }
 
 void spawn_fruit() {
@@ -344,7 +345,7 @@ void handle_client_message(const char* buffer) {
     } else if (strncmp(buffer, "PLAYER", 6) == 0) {
         char name[50];
         sscanf(buffer, "PLAYER|%49[^|]", name);
-        init_snake(game.num_players, name);
+        int assigned = init_snake(game.num_players, name);
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].in_use) {
@@ -366,6 +367,13 @@ void handle_client_message(const char* buffer) {
     }
 }
 
+static int find_client_index_by_socket(int s) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].in_use && clients[i].socket == s) return i;
+    }
+    return -1;
+}
+
 void* client_handler(void* arg) {
     int client_socket = *(int*)arg;
     free(arg);
@@ -379,13 +387,52 @@ void* client_handler(void* arg) {
         buffer[n] = '\0';
 
         pthread_mutex_lock(&game_mutex);
-        handle_client_message(buffer);
+
+        int cidx = find_client_index_by_socket(client_socket);
+
+        if (strncmp(buffer, "NEW_GAME", 8) == 0) {
+            int mode, world_type, time_limit;
+            sscanf(buffer, "NEW_GAME|%d|%d|%d", &mode, &world_type, &time_limit);
+            init_game(WORLD_WIDTH, WORLD_HEIGHT, (GameMode)mode, time_limit, (WorldType)world_type);
+
+        } else if (strncmp(buffer, "PLAYER", 6) == 0) {
+            char name[50];
+            sscanf(buffer, "PLAYER|%49[^|]", name);
+
+            int assigned = init_snake(game.num_players, name);
+            if (cidx >= 0) clients[cidx].player_id = assigned;
+
+            if (assigned >= 0) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "ASSIGN|%d|", assigned);
+                send(client_socket, msg, strlen(msg), 0);
+            }
+
+        } else if (strncmp(buffer, "MOVE", 4) == 0) {
+            int pid_from_client, dir;
+            sscanf(buffer, "MOVE|%d|%d", &pid_from_client, &dir);
+
+            int pid = (cidx >= 0) ? clients[cidx].player_id : -1;
+            if (pid >= 0 && pid < game.num_players && game.players[pid].alive) {
+                game.players[pid].next_direction = (Direction)dir;
+            }
+
+        } else if (strncmp(buffer, "QUIT", 4) == 0) {
+            int pid_from_client;
+            sscanf(buffer, "QUIT|%d", &pid_from_client);
+
+            int pid = (cidx >= 0) ? clients[cidx].player_id : -1;
+            if (pid >= 0 && pid < game.num_players) {
+                game.players[pid].alive = 0;
+            }
+        }
+
         pthread_mutex_unlock(&game_mutex);
 
         send_game_state(client_socket);
     }
 
-        close(client_socket);
+    close(client_socket);
 
     pthread_mutex_lock(&game_mutex);
     // označ slot ako voľný a zníž počítadlo klientov
@@ -482,6 +529,7 @@ int main() {
 
     clients[idx].socket = client_socket;
     clients[idx].in_use = 1;
+    clients[idx].player_id = -1;
     num_clients++;
 
     fprintf(stderr, "[SERVER] Klient #%d sa pripojil: %s:%d (aktívni: %d)\n",
