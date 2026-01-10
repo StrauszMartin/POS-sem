@@ -149,7 +149,7 @@ void parse_game_state(const char* buffer) {
     game_state.elapsed_time = parts[11];
 
     const char* ptr = strchr(buffer, '|');
-    for (int i = 0; i < 11 && ptr; i++)
+    for (int i = 0; i < 12 && ptr; i++)
         ptr = strchr(ptr + 1, '|');
     if (ptr) ptr++;
 
