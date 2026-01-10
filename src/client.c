@@ -357,12 +357,86 @@ static void term_restore(TermGuard *tg) {
 }
 
 void game_loop() {
+    TermGuard tg;
+    int raw_ok = (term_enable_raw(&tg) == 0);
+
     Direction current_dir = RIGHT;
     int game_active = 1;
+    int paused = 0;
 
     while (in_game && game_active) {
+        // 1) počkaj max 100ms na socket alebo kláves
+        fd_set rfds;
+        FD_ZERO(&rfds);
+
+        int maxfd = STDIN_FILENO;
+        FD_SET(STDIN_FILENO, &rfds);
+
+        if (sock >= 0) {
+            FD_SET(sock, &rfds);
+            if (sock > maxfd) maxfd = sock;
+        }
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000; // 100ms tick
+
+        int rv = select(maxfd + 1, &rfds, NULL, NULL, &tv);
+
+        // 2) dáta zo servera
+        if (rv > 0 && sock >= 0 && FD_ISSET(sock, &rfds)) {
+            receive_game_state();
+        }
+
+        // 3) kláves
+        char input = 0;
+        if (rv > 0 && FD_ISSET(STDIN_FILENO, &rfds)) {
+            ssize_t n = read(STDIN_FILENO, &input, 1);
+            if (n != 1) input = 0;
+        }
+
+        // 4) spracovanie kláves (zakázané otočenie o 180°)
+        switch (input) {
+            case 'W': case 'w':
+                if (current_dir != DOWN) current_dir = UP;
+                break;
+            case 'S': case 's':
+                if (current_dir != UP) current_dir = DOWN;
+                break;
+            case 'A': case 'a':
+                if (current_dir != RIGHT) current_dir = LEFT;
+                break;
+            case 'D': case 'd':
+                if (current_dir != LEFT) current_dir = RIGHT;
+                break;
+
+            case ' ': // pause toggle
+                paused = !paused;
+                break;
+
+            case 'Q': case 'q': {
+                in_game = 0;
+                game_active = 0;
+
+                char qmsg[100];
+                snprintf(qmsg, sizeof(qmsg), "QUIT|%d", player_id);
+                send_message(qmsg);
+                break;
+            }
+
+            default:
+                break;
+        }
+
+        // 5) kontinuálny pohyb: posielaj MOVE každý tick, iba keď nie je pauza
+        if (in_game && game_active && !paused) {
+            char msg[100];
+            snprintf(msg, sizeof(msg), "MOVE|%d|%d", player_id, (int)current_dir);
+            send_message(msg);
+        }
+
+        // 6) render
         clear_screen();
-        receive_game_state();
         render_players_info();
         render_world();
 
@@ -373,52 +447,26 @@ void game_loop() {
                    game_state.elapsed_time);
         }
 
-        printf("Smer (W/S/A/D/SPACE=pause/Q=quit): ");
+        printf("Smer (W/S/A/D, SPACE=pause, Q=quit): %s\n", paused ? "[PAUSED]" : "");
         fflush(stdout);
 
-        char input;
-        scanf("%c", &input);
-        getchar();
+        // 7) game over
+        if (game_state.game_over) {
+            in_game = 0;
+            game_active = 0;
 
-        switch (input) {
-            case 'W': case 'w': current_dir = UP; break;
-            case 'S': case 's': current_dir = DOWN; break;
-            case 'A': case 'a': current_dir = LEFT; break;
-            case 'D': case 'd': current_dir = RIGHT; break;
-            case ' ':
-                in_game = 0;
-                printf("Hra pozastavená.\n");
-                break;
-            case 'Q': case 'q': {
-                in_game = 0;
-                game_active = 0;
-                char qmsg[100];
-                snprintf(qmsg, 100, "QUIT|%d", player_id);
-                send_message(qmsg);
-                break;
+            printf("\n=== KONIEC HRY ===\n");
+            if (game_state.num_players > player_id) {
+                printf("Tvoje finálne body: %d\n",
+                       game_state.players[player_id].score);
+                printf("Čas v hre: %d sekúnd\n", game_state.elapsed_time);
             }
+
+            usleep(500000);
         }
-
-        if (in_game) {
-            char msg[100];
-            snprintf(msg, 100, "MOVE|%d|%d", player_id, (int)current_dir);
-            send_message(msg);
-            receive_game_state();
-
-            if (game_state.game_over) {
-                in_game = 0;
-                game_active = 0;
-                printf("\n=== KONIEC HRY ===\n");
-                if (game_state.num_players > player_id) {
-                    printf("Tvoje finálne body: %d\n",
-                           game_state.players[player_id].score);
-                    printf("Čas v hre: %d sekúnd\n", game_state.elapsed_time);
-                }
-            }
-        }
-
-        usleep(100000);
     }
+
+    if (raw_ok) term_restore(&tg);
 }
 
 int main() {
