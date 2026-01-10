@@ -222,6 +222,15 @@ void receive_game_state() {
     int n = recv(sock, buffer, BUFFER_SIZE - 1, 0);
     if (n > 0) {
         buffer[n] = '\0';
+
+        if (strncmp(buffer, "ASSIGN|", 7) == 0) {
+            int id;
+            if (sscanf(buffer, "ASSIGN|%d|", &id) == 1) {
+                player_id = id;
+            }
+            return;
+        }
+
         parse_game_state(buffer);
     }
 }
@@ -274,7 +283,7 @@ void create_new_game() {
 
     server_pid = fork();
     if (server_pid == 0) {
-        chdir("/home/strausz/semka2/src");
+        chdir("/src");
         execl("./server", "server", NULL);
         perror("execl server");
         exit(1);
@@ -291,7 +300,7 @@ void create_new_game() {
         fgets(name, 50, stdin);
         name[strcspn(name, "\n")] = 0;
 
-        player_id = 0;
+        player_id = -1;
 
         char msg[256];
         snprintf(msg, 256, "NEW_GAME|%d|%d|%d", mode, world_type, time_limit);
@@ -325,7 +334,7 @@ void join_existing_game() {
         fgets(name, 50, stdin);
         name[strcspn(name, "\n")] = 0;
 
-        player_id = 1;
+        player_id = -1;
 
         char msg[256];
         snprintf(msg, 256, "PLAYER|%s", name);
