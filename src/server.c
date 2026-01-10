@@ -264,15 +264,12 @@ void send_game_state(int client_socket) {
              game.fruit_x, game.fruit_y, game.active, game.game_over,
              game.num_obstacles, game.mode, game.world_type, game.elapsed_time);
 
-    for (int y = 0; y < game.height; y++) {
-        for (int x = 0; x < game.width; x++) {
-            if (game.obstacles[y][x] == 1) {
-                char obs_str[30];
-                snprintf(obs_str, 30, "O|%d|%d|", x, y);
-                if (strlen(response) + strlen(obs_str) + 1 < BUFFER_SIZE)
-                    strcat(response, obs_str);
-            }
-        }
+    for (int i = 0; i < game.num_obstacles; i++) {
+        int x = game.obstacles[i][0];
+        int y = game.obstacles[i][1];
+        char obs_str[30];
+        snprintf(obs_str, 30, "O|%d|%d|", x, y);
+        if (strlen(response) + strlen(obs_str) + 1 < BUFFER_SIZE) strcat(response, obs_str);
     }
 
     for (int i = 0; i < game.num_players; i++) {
