@@ -39,7 +39,7 @@ void generate_obstacles_random(int count) {
             }
         }
 
-        if (valid && !is_obstacle(x, y)) {
+        if (valid && !is_obstacle(x, y) && game.num_obstacles < MAX_OBSTACLES) {
             game.obstacles[game.num_obstacles][0] = x;
             game.obstacles[game.num_obstacles][1] = y;
             game.num_obstacles++;
@@ -64,11 +64,7 @@ void init_game(int width, int height, GameMode mode, int time_limit, WorldType w
     game.world_type = world_type;
     game.start_time = time(NULL);
 
-    for (int y = 0; y < game.height; y++) {
-        for (int x = 0; x < game.width; x++) {
-            game.obstacles[y][x] = 0;
-        }
-    }
+    game.num_obstacles = 0;
 
     if (world_type == WORLD_WITH_OBSTACLES) {
         int obstacle_count = (width * height) / 8;
@@ -80,7 +76,7 @@ void init_game(int width, int height, GameMode mode, int time_limit, WorldType w
         game.fruit_x = rand() % width;
         game.fruit_y = rand() % height;
         valid = 1;
-        if (game.obstacles[game.fruit_y][game.fruit_x] == 1) {
+        if (is_obstacle(game.fruit_x, game.fruit_y)) {
             valid = 0;
         }
     }
@@ -124,7 +120,7 @@ void spawn_fruit() {
         game.fruit_y = rand() % game.height;
         valid = 1;
 
-        if (game.obstacles[game.fruit_y][game.fruit_x] == 1) {
+        if (is_obstacle(game.fruit_x, game.fruit_y)) {
             valid = 0;
             continue;
         }
@@ -172,7 +168,7 @@ void update_snake(Player* p) {
         }
     }
 
-    if (game.obstacles[new_y][new_x] == 1) {
+    if (is_obstacle(new_x, new_y)) {
         p->alive = 0;
         fprintf(stderr, "[SERVER] Hadík '%s' narazil do prekážky!\n", p->name);
         return;
@@ -254,6 +250,46 @@ void* game_loop(void* arg) {
     return NULL;
 }
 
+static void build_map(char *out) {
+    // out musí mať aspoň WORLD_WIDTH*WORLD_HEIGHT + 1
+    int k = 0;
+
+    // '.' = prázdne (nepoužívaj ' ' kvôli parsing/debug)
+    for (int y = 0; y < game.height; y++)
+        for (int x = 0; x < game.width; x++)
+            out[k++] = '.';
+
+    // prekážky
+    for (int i = 0; i < game.num_obstacles; i++) {
+        int x = game.obstacles[i][0], y = game.obstacles[i][1];
+        if (x>=0 && x<game.width && y>=0 && y<game.height)
+            out[y*game.width + x] = '#';
+    }
+
+    // ovocie
+    if (game.fruit_x>=0 && game.fruit_x<game.width && game.fruit_y>=0 && game.fruit_y<game.height)
+        out[game.fruit_y*game.width + game.fruit_x] = '*';
+
+    // hady (server má body_x/body_y, tam je pravda)
+    for (int i = 0; i < game.num_players; i++) {
+        Player *p = &game.players[i];
+        if (!p->alive) continue;
+
+        // telo
+        for (int j = 1; j < p->body_len; j++) {
+            int x = p->body_x[j], y = p->body_y[j];
+            if (x>=0 && x<game.width && y>=0 && y<game.height)
+                out[y*game.width + x] = '~';
+        }
+
+        // hlava
+        if (p->head_x>=0 && p->head_x<game.width && p->head_y>=0 && p->head_y<game.height)
+            out[p->head_y*game.width + p->head_x] = '@';
+    }
+
+    out[k] = '\0';
+}
+
 void send_game_state(int client_socket) {
     pthread_mutex_lock(&game_mutex);
 
@@ -263,6 +299,15 @@ void send_game_state(int client_socket) {
              game.id, game.width, game.height, game.num_players,
              game.fruit_x, game.fruit_y, game.active, game.game_over,
              game.num_obstacles, game.mode, game.world_type, game.elapsed_time);
+
+    char mapbuf[WORLD_WIDTH * WORLD_HEIGHT + 1];
+    build_map(mapbuf);
+
+    if (strlen(response) + 2 + strlen(mapbuf) + 2 < BUFFER_SIZE) {
+        strcat(response, "M|");
+        strcat(response, mapbuf);
+        strcat(response, "|");
+    }
 
     for (int i = 0; i < game.num_obstacles; i++) {
         int x = game.obstacles[i][0];
