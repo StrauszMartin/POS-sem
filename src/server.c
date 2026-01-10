@@ -15,8 +15,16 @@ int num_clients = 0;
 pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
 int running = 1;
 
+static int is_obstacle(int x, int y) {
+    for (int i = 0; i < game.num_obstacles; i++) {
+        if (game.obstacles[i][0] == x && game.obstacles[i][1] == y) return 1;
+    }
+    return 0;
+}
+
 void generate_obstacles_random(int count) {
     game.num_obstacles = 0;
+    if (count > MAX_OBSTACLES) count = MAX_OBSTACLES;
     int attempts = 0;
 
     while (game.num_obstacles < count && attempts < count * 3) {
@@ -31,8 +39,9 @@ void generate_obstacles_random(int count) {
             }
         }
 
-        if (valid && game.obstacles[y][x] != 1) {
-            game.obstacles[y][x] = 1;
+        if (valid && !is_obstacle(x, y)) {
+            game.obstacles[game.num_obstacles][0] = x;
+            game.obstacles[game.num_obstacles][1] = y;
             game.num_obstacles++;
         }
 
