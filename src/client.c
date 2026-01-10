@@ -1,6 +1,16 @@
 #include "snake.h"
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <termios.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/select.h>
+
+typedef struct {
+    struct termios orig;
+    int orig_flags;
+    int active;
+} TermGuard;
 
 int sock = -1;
 GameState game_state;
@@ -313,6 +323,37 @@ void join_existing_game() {
     } else {
         printf("Chyba: Server nie je dostupný\n");
     }
+}
+
+static int term_enable_raw(TermGuard *tg) {
+    tg->active = 0;
+
+    if (tcgetattr(STDIN_FILENO, &tg->orig) == -1) return -1;
+
+    tg->orig_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (tg->orig_flags == -1) tg->orig_flags = 0;
+
+    struct termios raw = tg->orig;
+    raw.c_lflag &= ~(ICANON | ECHO);   // bez Enter, bez echo
+    raw.c_cc[VMIN] = 0;               // neblokujúci read
+    raw.c_cc[VTIME] = 0;
+
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) return -1;
+
+    // stdin non-blocking (nepovinné, ale praktické)
+    if (fcntl(STDIN_FILENO, F_SETFL, tg->orig_flags | O_NONBLOCK) == -1) {
+        // aj keby to nešlo, raw režim stále funguje; nechaj to tak
+    }
+
+    tg->active = 1;
+    return 0;
+}
+
+static void term_restore(TermGuard *tg) {
+    if (!tg || !tg->active) return;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &tg->orig);
+    fcntl(STDIN_FILENO, F_SETFL, tg->orig_flags);
+    tg->active = 0;
 }
 
 void game_loop() {

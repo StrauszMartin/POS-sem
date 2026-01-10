@@ -1,4 +1,6 @@
 #include "snake.h"
+#include <termios.h>
+
 
 void send_game_state(int client_socket);
 
