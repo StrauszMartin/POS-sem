@@ -77,7 +77,7 @@ static int appendf(char *dst, int cap, int off, const char *fmt, ...) {
 }
 
 static int line_end(int off, char *dst, int cap) {
-    return appendf(dst, cap, off, "\033[2K\n");
+    return appendf(dst, cap, off, "\033[K\n");
 }
 
 static int render_players_info_to_buf(client_ctx_t *C, char *out, int cap, int off) {
