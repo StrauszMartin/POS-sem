@@ -313,72 +313,87 @@ static void create_new_game(client_ctx_t *C) {
     printf("1. Štandardný (hra pokračuje pokiaľ je aspoň 1 hráč)\n");
     printf("2. Časový (určitý čas)\n");
     printf("Vybrať: ");
-
+ 
     int mode_choice;
     scanf("%d", &mode_choice);
     getchar();
-
+ 
     int mode = (mode_choice == 2) ? MODE_TIMED : MODE_STANDARD;
     int time_limit = 0;
-
+ 
     if (mode == MODE_TIMED) {
         printf("Zadaj čas (v sekundách): ");
         scanf("%d", &time_limit);
         getchar();
     }
-
+ 
     printf("\nVyber typ herného sveta:\n");
     printf("1. Bez prekážok (wrap-around na okrajoch)\n");
     printf("2. S náhodne generovanými prekážkami\n");
     printf("Vybrať: ");
-
+ 
     int world_choice;
     scanf("%d", &world_choice);
     getchar();
-
+ 
     int world_type = (world_choice == 2) ? WORLD_WITH_OBSTACLES : WORLD_NO_OBSTACLES;
-
+ 
     printf("\nSpúšťam server v pozadí...\n");
-
+ 
     C->server_pid = fork();
     if (C->server_pid == 0) {
         execl("./server", "server", NULL);
         perror("execl server");
-        exit(1);
+        _exit(1);
     } else if (C->server_pid < 0) {
         printf("Chyba: Nepodarilo sa spustiť server\n");
         return;
     }
+ 
+    usleep(200 * 1000); 
+ 
+    int status = 0;
+    pid_t r = waitpid(C->server_pid, &status, WNOHANG);
+    int server_started = (r == 0);  
 
-    sleep(2);
-
+    if (!server_started) {
+        printf("Server sa nepodarilo spustiť (port %d je už používaný). Pripájam sa do existujúcej hry...\n", PORT);
+        C->server_pid = -1; 
+    } else {
+        usleep(300 * 1000);
+    }
+ 
     if (connect_to_server(C)) {
         printf("Zadaj meno hráča: ");
         char name[50];
         fgets(name, 50, stdin);
         name[strcspn(name, "\n")] = 0;
-
+ 
         C->player_id = -1;
-
-        char msg[256];
-        snprintf(msg, sizeof(msg), "NEW_GAME|%d|%d|%d", mode, world_type, time_limit);
-        send_message(C, msg);
-
-        usleep(100000);
-
-        snprintf(msg, sizeof(msg), "PLAYER|%s", name);
-        send_message(C, msg);
-
+ 
+        if (server_started) {
+            char ng[256];
+            snprintf(ng, sizeof(ng), "NEW_GAME|%d|%d|%d", mode, world_type, time_limit);
+            send_message(C, ng);
+            usleep(100000);
+        }
+ 
+        char pl[256];
+        snprintf(pl, sizeof(pl), "PLAYER|%s", name);
+        send_message(C, pl);
+ 
         C->in_game = 1;
         printf("Hra sa spustila!\n");
         sleep(1);
     } else {
         printf("Chyba: Nepodarilo sa pripojiť k serveru\n");
-        if (C->server_pid > 0) {
+        if (server_started && C->server_pid > 0) {
             kill(C->server_pid, SIGTERM);
+            waitpid(C->server_pid, NULL, 0);
         }
     }
 }
+
 
 static void join_existing_game(client_ctx_t *C) {
     printf("\n╔════════════════════════════════════════╗\n");
