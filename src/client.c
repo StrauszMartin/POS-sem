@@ -439,6 +439,7 @@ void game_loop() {
         struct timeval tv;
         tv.tv_sec = 0;
         tv.tv_usec = 100000/FPS;
+        //sdfsdfsdf
 
         int rv = select(maxfd + 1, &rfds, NULL, NULL, &tv);
 
