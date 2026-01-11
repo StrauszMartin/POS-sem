@@ -340,7 +340,7 @@ void create_new_game() {
         send_message(msg);
 
         in_game = 1;
-        printf("Hra sa spustila!\n");
+          printf("Hra sa spustila!\n");
         sleep(1);
     } else {
         printf("Chyba: Nepodarilo sa pripojiť k serveru\n");
@@ -519,7 +519,7 @@ void game_loop() {
     }
 
     if (raw_ok) term_restore(&tg);
-}
+  }
 
 int main() {
     printf("╔══════════════════════════════╗\n");
