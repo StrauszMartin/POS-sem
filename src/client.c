@@ -20,7 +20,7 @@ char world[WORLD_HEIGHT][WORLD_WIDTH];
 int server_pid = -1;
 
 void clear_screen() {
-    printf("\033[2J\033[1;1H");
+    printf("\033[H");
     fflush(stdout);
 }
 
@@ -408,8 +408,16 @@ static void term_restore(TermGuard *tg) {
 }
 
 void game_loop() {
+    printf("\033[2J\033[H");
+    fflush(stdout);
+
+
     TermGuard tg;
     int raw_ok = (term_enable_raw(&tg) == 0);
+
+    printf("\033[?25l"); // hide cursor
+    fflush(stdout);
+
 
     Direction current_dir = RIGHT;
     int game_active = 1;
@@ -430,7 +438,7 @@ void game_loop() {
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 100000; // 100ms tick
+        tv.tv_usec = 100000/FPS;
 
         int rv = select(maxfd + 1, &rfds, NULL, NULL, &tv);
 
@@ -517,6 +525,9 @@ void game_loop() {
             usleep(500000);
         }
     }
+
+    printf("\033[?25h"); // show cursor
+    fflush(stdout);
 
     if (raw_ok) term_restore(&tg);
   }
