@@ -12,8 +12,9 @@
 #include <time.h>
 #include <signal.h>
 
-#define PORT 22346
+
 #define BUFFER_SIZE 8192
+#define DEFAULT_PORT 22346
 
 // max rozmery pre buffre/klienta (kvôli world[][] a mapbuf)
 #define WORLD_WIDTH MAX_MAP_SIZE

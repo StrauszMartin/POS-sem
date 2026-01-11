@@ -27,6 +27,20 @@ static void sleep_us(long usec) {
     nanosleep(&ts, NULL);
 }
 
+static int parse_port(int argc, char **argv) {
+    int port = DEFAULT_PORT;
+ 
+    if (argc >= 2) {
+        port = atoi(argv[1]);
+    }
+ 
+    if (port < 20000 || port > 60000) {
+        fprintf(stderr, "[SERVER] Neplatný port %d (povolené 20000-60000)\n", port);
+        return -1;
+    }
+    return port;
+}
+
 typedef struct {
     int socket;
     int player_id;
@@ -85,31 +99,6 @@ static void generate_obstacles_random(GameState *g, int count) {
     fprintf(stderr, "[SERVER] %d prekážok vygenerovaných\n", g->num_obstacles);
 }
 
-static void spawn_fruit(GameState *g) {
-    int valid = 0;
-    while (!valid) {
-        g->fruit_x = rand() % g->width;
-        g->fruit_y = rand() % g->height;
-        valid = 1;
-
-        if (is_obstacle(g, g->fruit_x, g->fruit_y)) {
-            valid = 0;
-            continue;
-        }
-
-        for (int i = 0; i < g->num_players; i++) {
-            if (!g->players[i].alive) continue;
-            for (int j = 0; j < g->players[i].body_len; j++) {
-                if (g->players[i].body_x[j] == g->fruit_x &&
-                    g->players[i].body_y[j] == g->fruit_y) {
-                    valid = 0;
-                    break;
-                }
-            }
-        }
-    }
-    fprintf(stderr, "[SERVER] Ovocie vygenerované: (%d, %d)\n", g->fruit_x, g->fruit_y);
-}
 
 static int cell_occupied_by_snake(const GameState *g, int x, int y) {
     for (int i = 0; i < g->num_players; i++) {
@@ -591,8 +580,12 @@ static void* client_handler(void *arg) {
     return NULL;
 }
 
-int main(void) {
-    fprintf(stderr, "SERVER HADIK - port %d\n", PORT);
+int main(int argc, char **argv) {
+    int port = parse_port(argc,argv);
+    if (port < 0) return 1;
+
+    fprintf(stderr, "SERVER HADIK - port %d\n", port);
+
 
     srand((unsigned)time(NULL));
 
@@ -607,8 +600,7 @@ int main(void) {
         S.clients[i].player_id = -1;
     }
 
-    // NEVOLÁM init_game s MODE_CLASSIC (u teba neexistuje)
-    // default init spravíme až pri NEW_GAME alebo pri PLAYER fallbacku.
+  
 
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
@@ -622,7 +614,7 @@ int main(void) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons((uint16_t)port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(server_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {

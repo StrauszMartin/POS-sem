@@ -18,6 +18,7 @@ typedef struct {
 
 typedef struct {
     int sock;
+    int port;
     GameState game_state;
     int player_id;
     int in_game;
@@ -30,7 +31,24 @@ static void clear_screen(void) {
     printf("\033[H\033[J");
 }
 
-static int connect_to_server(client_ctx_t *C) {
+static int read_port_loop(const char *prompt) {
+    int p = 0;
+    while (1) {
+        printf("%s", prompt);
+        if (scanf("%d", &p) != 1) {
+            // vyčisti zvyšok riadku
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+            continue;
+        }
+        getchar(); // zober '\n'
+ 
+        if (p >= 20000 && p <= 60000) return p;
+        printf("Neplatný port. Zadaj číslo v rozsahu 20000-60000.\n");
+    }
+}
+
+static int connect_to_server(client_ctx_t *C, int port) {
     C->sock = socket(AF_INET, SOCK_STREAM, 0);
     if (C->sock < 0) {
         printf("Chyba: Nepodarilo sa vytvoriť socket\n");
@@ -40,11 +58,12 @@ static int connect_to_server(client_ctx_t *C) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons((uint16_t)port);
+    C->port = port;
     inet_aton("127.0.0.1", &addr.sin_addr);
 
     if (connect(C->sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-          printf("Chyba: Nepodarilo sa pripojiť k serveru na localhost:%d\n", PORT);
+          printf("Chyba: Nepodarilo sa pripojiť k serveru na localhost:%d\n", port);
         close(C->sock);
         C->sock = -1;
         return 0;
@@ -350,6 +369,8 @@ static void create_new_game(client_ctx_t *C) {
     printf("║            NOVA HRA                    ║\n");
     printf("╚════════════════════════════════════════╝\n\n");
  
+    int port = read_port_loop("Zadaj port pre server (20000-60000): ");
+ 
     printf("Vyber herný režim:\n");
     printf("1. Štandardný (hra pokračuje pokiaľ je aspoň 1 hráč)\n");
     printf("2. Časový (určitý čas)\n");
@@ -383,10 +404,13 @@ static void create_new_game(client_ctx_t *C) {
     int h = read_int_in_range("Zadaj vysku mapy", MIN_MAP_SIZE, MAX_MAP_SIZE);
  
     printf("\nSpúšťam server v pozadí...\n");
- 
+
+
     C->server_pid = fork();
     if (C->server_pid == 0) {
-        execl("./server", "server", NULL);
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", port);
+        execl("./server", "server", port_str, NULL);
         perror("execl server");
         exit(1);
     } else if (C->server_pid < 0) {
@@ -394,9 +418,9 @@ static void create_new_game(client_ctx_t *C) {
         return;
     }
  
-    sleep(2);
+    sleep(1);
  
-    if (connect_to_server(C)) {
+    if (connect_to_server(C, port)) {
         printf("Zadaj meno hráča: ");
         char name[50];
         fgets(name, 50, stdin);
@@ -405,6 +429,7 @@ static void create_new_game(client_ctx_t *C) {
         C->player_id = -1;
  
         char msg[256];
+
         snprintf(msg, sizeof(msg), "NEW_GAME|%d|%d|%d|%d|%d", mode, world_type, time_limit, w, h);
         send_message(C, msg);
  
@@ -428,27 +453,30 @@ static void join_existing_game(client_ctx_t *C) {
     printf("\n╔════════════════════════════════════════╗\n");
     printf("║      PRIPOJIT SA K HRE                 ║\n");
     printf("╚════════════════════════════════════════╝\n\n");
-    printf("Pokúšam sa pripojiť na localhost:%d\n", PORT);
-
-    if (connect_to_server(C)) {
+ 
+    int port = read_port_loop("Zadaj port hry (20000-60000): ");
+    printf("Pokúšam sa pripojiť na localhost:%d\n", port);
+ 
+    if (connect_to_server(C, port)) {
         printf("Zadaj meno hráča: ");
         char name[50];
         fgets(name, 50, stdin);
         name[strcspn(name, "\n")] = 0;
-
+ 
         C->player_id = -1;
-
+ 
         char msg[256];
         snprintf(msg, sizeof(msg), "PLAYER|%s", name);
         send_message(C, msg);
-
+ 
         C->in_game = 1;
-        printf("Priradený si sa k hre!\n");
+        printf("Poslal som PLAYER, čakám na hru...\n");
         sleep(1);
     } else {
-        printf("Chyba: Server nie je dostupný\n");
+        printf("Chyba: Server nie je dostupný na porte %d\n", port);
     }
 }
+
 
 static int term_enable_raw(TermGuard *tg) {
     tg->active = 0;
@@ -606,6 +634,7 @@ static void game_loop(client_ctx_t *C) {
 int main(void) {
     client_ctx_t C;
     memset(&C, 0, sizeof(C));
+    C.port = DEFAULT_PORT;
     C.sock = -1;
     C.player_id = -1;
     C.in_game = 0;
