@@ -14,11 +14,19 @@
 
 #define PORT 22346
 #define BUFFER_SIZE 8192
-#define WORLD_WIDTH 40
-#define WORLD_HEIGHT 20
+
+// max rozmery pre buffre/klienta (kvôli world[][] a mapbuf)
+#define WORLD_WIDTH MAX_MAP_SIZE
+#define WORLD_HEIGHT MAX_MAP_SIZE
+ 
+// limity, ktoré bude hráč zadávať
+#define MIN_MAP_SIZE 10
+#define MAX_MAP_SIZE 25
+ 
+
 #define INITIAL_SNAKE_LEN 3
 #define FPS 5
-#define MAX_OBSTACLES 50
+#define MAX_OBSTACLES 7
 #define MAX_CLIENTS 4
 #define MAX_FRUITS 10
 

@@ -21,7 +21,7 @@ typedef struct {
     GameState game_state;
     int player_id;
     int in_game;
-    char world[WORLD_HEIGHT][WORLD_WIDTH];
+    char world[MAX_MAP_SIZE][MAX_MAP_SIZE];
     int server_pid;
 } client_ctx_t;
 
@@ -60,8 +60,8 @@ static void send_message(client_ctx_t *C, const char* msg) {
 }
 
 static void clear_world(client_ctx_t *C) {
-    for (int y = 0; y < WORLD_HEIGHT; y++)
-        for (int x = 0; x < WORLD_WIDTH; x++)
+    for (int y = 0; y < MAX_MAP_SIZE; y++)
+        for (int x = 0; x < MAX_MAP_SIZE; x++)
             C->world[y][x] = ' ';
 }
 
@@ -118,29 +118,48 @@ static int render_players_info_to_buf(client_ctx_t *C, char *out, int cap, int o
 }
 
 static int render_world_to_buf(client_ctx_t *C, char *out, int cap, int off) {
+    int w = C->game_state.width;
+    int h = C->game_state.height;
+ 
+    // bezpečnostné clampy (nie "default" pre používateľa, len ochrana buffra)
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w > MAX_MAP_SIZE) w = MAX_MAP_SIZE;
+    if (h > MAX_MAP_SIZE) h = MAX_MAP_SIZE;
+ 
+    const int CELL_W = 2; // kľúč: 2 znaky na jednu hernú bunku
+ 
+    // horný rámik
     off = appendf(out, cap, off, "\n╔");
-    for (int x = 0; x < WORLD_WIDTH; x++) off = appendf(out, cap, off, "═");
+    for (int i = 0; i < w * CELL_W; i++) off = appendf(out, cap, off, "═");
     off = appendf(out, cap, off, "╗");
     off = line_end(off, out, cap);
-
-    for (int y = 0; y < WORLD_HEIGHT; y++) {
+ 
+    // telo mapy
+    for (int y = 0; y < h; y++) {
         off = appendf(out, cap, off, "║");
-        for (int x = 0; x < WORLD_WIDTH; x++) {
+        for (int x = 0; x < w; x++) {
             char c = C->world[y][x];
             if (c == '.') c = ' ';
-            off = appendf(out, cap, off, "%c", c);
+ 
+            // každý cell vytlač CELL_W krát
+            for (int r = 0; r < CELL_W; r++) {
+                off = appendf(out, cap, off, "%c", c);
+            }
         }
         off = appendf(out, cap, off, "║");
         off = line_end(off, out, cap);
     }
-
+ 
+    // spodný rámik
     off = appendf(out, cap, off, "╚");
-    for (int x = 0; x < WORLD_WIDTH; x++) off = appendf(out, cap, off, "═");
+    for (int i = 0; i < w * CELL_W; i++) off = appendf(out, cap, off, "═");
     off = appendf(out, cap, off, "╝");
     off = line_end(off, out, cap);
-
+ 
     return off;
 }
+
 
 static const char* skip_next_field(const char* p) {
     const char* q = strchr(p, '|');
@@ -305,10 +324,32 @@ static void show_main_menu(void) {
     printf("Vybrať možnosť: ");
 }
 
+
+static int read_int_in_range(const char *prompt, int minv, int maxv) {
+    int v;
+    while (1) {
+        printf("%s (%d-%d): ", prompt, minv, maxv);
+        fflush(stdout);
+ 
+        if (scanf("%d", &v) != 1) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+            continue;
+        }
+
+        int ch;
+        while ((ch = getchar()) != '\n' && ch != EOF) {}
+ 
+        if (v < minv || v > maxv) continue;
+        return v;
+    }
+}
+
 static void create_new_game(client_ctx_t *C) {
     printf("\n╔════════════════════════════════════════╗\n");
     printf("║            NOVA HRA                    ║\n");
     printf("╚════════════════════════════════════════╝\n\n");
+ 
     printf("Vyber herný režim:\n");
     printf("1. Štandardný (hra pokračuje pokiaľ je aspoň 1 hráč)\n");
     printf("2. Časový (určitý čas)\n");
@@ -338,30 +379,22 @@ static void create_new_game(client_ctx_t *C) {
  
     int world_type = (world_choice == 2) ? WORLD_WITH_OBSTACLES : WORLD_NO_OBSTACLES;
  
+    int w = read_int_in_range("Zadaj sirku mapy", MIN_MAP_SIZE, MAX_MAP_SIZE);
+    int h = read_int_in_range("Zadaj vysku mapy", MIN_MAP_SIZE, MAX_MAP_SIZE);
+ 
     printf("\nSpúšťam server v pozadí...\n");
  
     C->server_pid = fork();
     if (C->server_pid == 0) {
         execl("./server", "server", NULL);
         perror("execl server");
-        _exit(1);
+        exit(1);
     } else if (C->server_pid < 0) {
         printf("Chyba: Nepodarilo sa spustiť server\n");
         return;
     }
  
-    usleep(200 * 1000); 
- 
-    int status = 0;
-    pid_t r = waitpid(C->server_pid, &status, WNOHANG);
-    int server_started = (r == 0);  
-
-    if (!server_started) {
-        printf("Server sa nepodarilo spustiť (port %d je už používaný). Pripájam sa do existujúcej hry...\n", PORT);
-        C->server_pid = -1; 
-    } else {
-        usleep(300 * 1000);
-    }
+    sleep(2);
  
     if (connect_to_server(C)) {
         printf("Zadaj meno hráča: ");
@@ -371,29 +404,25 @@ static void create_new_game(client_ctx_t *C) {
  
         C->player_id = -1;
  
-        if (server_started) {
-            char ng[256];
-            snprintf(ng, sizeof(ng), "NEW_GAME|%d|%d|%d", mode, world_type, time_limit);
-            send_message(C, ng);
-            usleep(100000);
-        }
+        char msg[256];
+        snprintf(msg, sizeof(msg), "NEW_GAME|%d|%d|%d|%d|%d", mode, world_type, time_limit, w, h);
+        send_message(C, msg);
  
-        char pl[256];
-        snprintf(pl, sizeof(pl), "PLAYER|%s", name);
-        send_message(C, pl);
+        usleep(100000);
+ 
+        snprintf(msg, sizeof(msg), "PLAYER|%s", name);
+        send_message(C, msg);
  
         C->in_game = 1;
         printf("Hra sa spustila!\n");
         sleep(1);
     } else {
         printf("Chyba: Nepodarilo sa pripojiť k serveru\n");
-        if (server_started && C->server_pid > 0) {
+        if (C->server_pid > 0) {
             kill(C->server_pid, SIGTERM);
-            waitpid(C->server_pid, NULL, 0);
         }
     }
 }
-
 
 static void join_existing_game(client_ctx_t *C) {
     printf("\n╔════════════════════════════════════════╗\n");

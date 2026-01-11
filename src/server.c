@@ -31,7 +31,6 @@ typedef struct {
     int socket;
     int player_id;
     int in_use;
-    char name[50];
 } Client;
 
 typedef struct {
@@ -516,13 +515,16 @@ static void* client_handler(void *arg) {
 
         pthread_mutex_lock(&S->mtx);
 
-        int cidx = find_client_index_by_socket(S, client_socket);
-
+          int cidx = find_client_index_by_socket(S, client_socket);
+        
         if (strncmp(buffer, "NEW_GAME", 8) == 0) {
-            int mode, world_type, time_limit;
-            sscanf(buffer, "NEW_GAME|%d|%d|%d", &mode, &world_type, &time_limit);
-            init_game(&S->game, WORLD_WIDTH, WORLD_HEIGHT, (GameMode)mode, time_limit, (WorldType)world_type);
-
+            int mode, world_type, time_limit, w, h;
+ 
+            int nparsed = sscanf(buffer, "NEW_GAME|%d|%d|%d|%d|%d", &mode, &world_type, &time_limit, &w, &h);
+            
+            if (nparsed == 5) {
+                init_game(&S->game, w, h, (GameMode)mode, time_limit, (WorldType)world_type);
+            }
         } else if (strncmp(buffer, "PLAYER", 6) == 0) {
             // ak klient pošle PLAYER bez NEW_GAME, sprav default init
             if (S->game.width <= 0 || S->game.height <= 0) {
