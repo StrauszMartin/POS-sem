@@ -1,3 +1,4 @@
 src/client
 src/server
 *.o
+cmake-build-debug-wsl
