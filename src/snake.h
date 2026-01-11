@@ -12,7 +12,7 @@
 #include <time.h>
 #include <signal.h>
 
-#define PORT 22345
+#define PORT 22346
 #define BUFFER_SIZE 2048
 #define WORLD_WIDTH 40
 #define WORLD_HEIGHT 20
