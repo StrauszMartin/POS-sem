@@ -112,6 +112,83 @@ static void spawn_fruit(GameState *g) {
     fprintf(stderr, "[SERVER] Ovocie vygenerované: (%d, %d)\n", g->fruit_x, g->fruit_y);
 }
 
+static int cell_occupied_by_snake(const GameState *g, int x, int y) {
+    for (int i = 0; i < g->num_players; i++) {
+        const Player *p = &g->players[i];
+        if (!p->alive) continue;
+        for (int j = 0; j < p->body_len; j++) {
+            if (p->body_x[j] == x && p->body_y[j] == y) return 1;
+        }
+    }
+    return 0;
+}
+ 
+static int cell_occupied_by_fruit(const GameState *g, int x, int y) {
+    for (int i = 0; i < g->num_fruits; i++) {
+        if (g->fruits[i][0] == x && g->fruits[i][1] == y) return 1;
+    }
+    return 0;
+}
+ 
+static int alive_snakes(const GameState *g) {
+    int c = 0;
+    for (int i = 0; i < g->num_players; i++) {
+        if (g->players[i].alive) c++;
+    }
+    return c;
+}
+ 
+static void sync_legacy_fruit_xy(GameState *g) {
+    if (g->num_fruits > 0) {
+        g->fruit_x = g->fruits[0][0];
+        g->fruit_y = g->fruits[0][1];
+    } else {
+        g->fruit_x = -1;
+        g->fruit_y = -1;
+    }
+}
+ 
+static void spawn_fruit_at(GameState *g, int idx) {
+    int x, y;
+    int tries = 3000;
+ 
+    do {
+        x = rand() % g->width;
+        y = rand() % g->height;
+        tries--;
+    } while (
+        tries > 0 &&
+        (is_obstacle(g, x, y) ||
+         cell_occupied_by_snake(g, x, y) ||
+         cell_occupied_by_fruit(g, x, y))
+    );
+ 
+    if (tries <= 0) { x = 0; y = 0; }
+ 
+    g->fruits[idx][0] = x;
+    g->fruits[idx][1] = y;
+ 
+    sync_legacy_fruit_xy(g);
+ 
+    fprintf(stderr, "[SERVER] Ovocie[%d] vygenerované: (%d, %d)\n", idx, x, y);
+}
+ 
+static void ensure_fruits_count(GameState *g) {
+    int want = alive_snakes(g);
+    if (want > MAX_FRUITS) want = MAX_FRUITS;
+ 
+    while (g->num_fruits < want) {
+        spawn_fruit_at(g, g->num_fruits);
+        g->num_fruits++;
+    }
+ 
+    while (g->num_fruits > want) {
+        g->num_fruits--;
+    }
+ 
+    sync_legacy_fruit_xy(g);
+}
+
 static void init_game(GameState *g, int width, int height, GameMode mode, int time_limit, WorldType world_type) {
     g->id = rand() % 10000;
     g->width = width;
@@ -131,12 +208,8 @@ static void init_game(GameState *g, int width, int height, GameMode mode, int ti
         generate_obstacles_random(g, obstacle_count);
     }
 
-    int ok = 0;
-    while (!ok) {
-        g->fruit_x = rand() % width;
-        g->fruit_y = rand() % height;
-        ok = !is_obstacle(g, g->fruit_x, g->fruit_y);
-    }
+    g->num_fruits = 0;
+    ensure_fruits_count(g);
 
     fprintf(stderr, "[SERVER] Hra inicializovaná: %dx%d, režim: %d, svet: %d\n",
             width, height, mode, world_type);
@@ -183,6 +256,7 @@ static int init_snake(GameState *g, int player_id, const char *name) {
     }
 
     fprintf(stderr, "[SERVER] Hadík '%s' vytvorený (ID: %d)\n", p->name, player_id);
+    ensure_fruits_count(g);
     return player_id;
 }
 
@@ -227,7 +301,7 @@ static void update_snake(GameState *g, Player *p) {
             fprintf(stderr, "[SERVER] Hadík '%s' narazil sám do seba!\n", p->name);
             return;
         }
-    }
+      }
 
     for (int i = 0; i < g->num_players; i++) {
         if (g->players[i].id == p->id) continue;
@@ -251,15 +325,18 @@ static void update_snake(GameState *g, Player *p) {
     p->body_x[0] = new_x;
     p->body_y[0] = new_y;
 
-    if (p->head_x == g->fruit_x && p->head_y == g->fruit_y) {
-        p->score += 10;
-
-        int cap = snake_capacity(p);
-        if (p->body_len < cap) p->body_len++;
-
-        fprintf(stderr, "[SERVER] Hadík '%s' zjedol ovocie! Body: %d\n", p->name, p->score);
-        spawn_fruit(g);
-    }
+    for (int f = 0; f < g->num_fruits; f++) {
+        if (p->head_x == g->fruits[f][0] && p->head_y == g->fruits[f][1]) {
+            p->score += 10;
+ 
+            int cap = snake_capacity(p);
+            if (p->body_len < cap) p->body_len++;
+ 
+            fprintf(stderr, "[SERVER] Hadík '%s' zjedol ovocie[%d]! Body: %d\n", p->name, f, p->score);
+            spawn_fruit_at(g, f);
+            break;
+        }
+    }    
 }
 
 static void build_map(const GameState *g, char *out) {
@@ -275,8 +352,12 @@ static void build_map(const GameState *g, char *out) {
             out[y * g->width + x] = '#';
     }
 
-    if (g->fruit_x >= 0 && g->fruit_x < g->width && g->fruit_y >= 0 && g->fruit_y < g->height)
-        out[g->fruit_y * g->width + g->fruit_x] = '*';
+    for (int i = 0; i < g->num_fruits; i++) {
+        int fx = g->fruits[i][0], fy = g->fruits[i][1];
+        if (fx >= 0 && fx < g->width && fy >= 0 && fy < g->height)
+            out[fy * g->width + fx] = '*';
+    }  
+
 
     for (int i = 0; i < g->num_players; i++) {
         const Player *p = &g->players[i];
@@ -470,32 +551,38 @@ static void* client_handler(void *arg) {
             }
 
         } else if (strncmp(buffer, "QUIT", 4) == 0) {
-            int pid_from_client;
-            sscanf(buffer, "QUIT|%d", &pid_from_client);
-
             int pid = (cidx >= 0) ? S->clients[cidx].player_id : -1;
             if (pid >= 0 && pid < S->game.num_players) {
                 S->game.players[pid].alive = 0;
+                ensure_fruits_count(&S->game);
             }
         }
 
         pthread_mutex_unlock(&S->mtx);
-
-        // DÔLEŽITÉ: STATE NEPOSIELAJ TU -> to spôsobovalo blikanie
     }
 
     close(client_socket);
 
+
     pthread_mutex_lock(&S->mtx);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (S->clients[i].socket == client_socket && S->clients[i].in_use) {
-            S->clients[i].in_use = 0;
-            S->clients[i].socket = -1;
-            S->clients[i].player_id = -1;
-            if (S->num_clients > 0) S->num_clients--;
-            break;
+ 
+    int cidx = find_client_index_by_socket(S, client_socket);
+    if (cidx >= 0) {
+        int pid = S->clients[cidx].player_id;
+ 
+        // odregistruj klienta
+        S->clients[cidx].in_use = 0;
+        S->clients[cidx].socket = -1;
+        S->clients[cidx].player_id = -1;
+        if (S->num_clients > 0) S->num_clients--;
+ 
+        // zabi hráča (ak bol priradený)
+        if (pid >= 0 && pid < S->game.num_players) {
+            S->game.players[pid].alive = 0;
+            ensure_fruits_count(&S->game);
         }
-    }
+    } 
+
     pthread_mutex_unlock(&S->mtx);
 
     fprintf(stderr, "[SERVER] Klient odpojený, aktívni klienti: %d\n", S->num_clients);
@@ -610,4 +697,3 @@ int main(void) {
     fprintf(stderr, "[SERVER] Server sa vypína...\n");
     return 0;
 }
-

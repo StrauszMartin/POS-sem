@@ -44,7 +44,7 @@ static int connect_to_server(client_ctx_t *C) {
     inet_aton("127.0.0.1", &addr.sin_addr);
 
     if (connect(C->sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        printf("Chyba: Nepodarilo sa pripojiť k serveru na localhost:%d\n", PORT);
+          printf("Chyba: Nepodarilo sa pripojiť k serveru na localhost:%d\n", PORT);
         close(C->sock);
         C->sock = -1;
         return 0;
@@ -607,4 +607,3 @@ int main(void) {
     }
     return 0;
 }
-

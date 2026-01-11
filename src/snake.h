@@ -20,6 +20,7 @@
 #define FPS 5
 #define MAX_OBSTACLES 50
 #define MAX_CLIENTS 4
+#define MAX_FRUITS 10
 
 typedef enum {
     MSG_NEW_GAME = 1,
@@ -83,6 +84,8 @@ typedef struct {
     Player players[10];
     int fruit_x;
     int fruit_y;
+    int num_fruits;
+    int fruits[MAX_FRUITS][2];
     int obstacles[MAX_OBSTACLES][2];
     int num_obstacles;
     GameMode mode;
@@ -95,4 +98,3 @@ typedef struct {
 } GameState;
 
 #endif
-
