@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <sys/select.h>
 #include <stdarg.h>
+#include <signal.h>
 
 #define FRAME_BUF_SIZE 65536
 
@@ -15,33 +16,37 @@ typedef struct {
     int active;
 } TermGuard;
 
-int sock = -1;
-GameState game_state;
-int player_id = -1;
-int in_game = 0;
-char world[WORLD_HEIGHT][WORLD_WIDTH];
-int server_pid = -1;
+typedef struct {
+    int sock;
+    GameState game_state;
+    int player_id;
+    int in_game;
+    char world[WORLD_HEIGHT][WORLD_WIDTH];
+    int server_pid;
+} client_ctx_t;
 
-void clear_screen() {
-    printf("\033[H");
+static void clear_screen(void) {
+    // HOME + clear from cursor to end of screen (fix ghosting / flicker)
+    printf("\033[H\033[J");
 }
 
-int connect_to_server() {
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
+static int connect_to_server(client_ctx_t *C) {
+    C->sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (C->sock < 0) {
         printf("Chyba: Nepodarilo sa vytvoriť socket\n");
         return 0;
     }
 
     struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(PORT);
     inet_aton("127.0.0.1", &addr.sin_addr);
 
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (connect(C->sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         printf("Chyba: Nepodarilo sa pripojiť k serveru na localhost:%d\n", PORT);
-        close(sock);
-        sock = -1;
+        close(C->sock);
+        C->sock = -1;
         return 0;
     }
 
@@ -49,15 +54,15 @@ int connect_to_server() {
     return 1;
 }
 
-void send_message(const char* msg) {
-    if (sock < 0) return;
-    send(sock, msg, strlen(msg), 0);
+static void send_message(client_ctx_t *C, const char* msg) {
+    if (!C || C->sock < 0) return;
+    send(C->sock, msg, strlen(msg), 0);
 }
 
-void clear_world() {
+static void clear_world(client_ctx_t *C) {
     for (int y = 0; y < WORLD_HEIGHT; y++)
         for (int x = 0; x < WORLD_WIDTH; x++)
-            world[y][x] = ' ';
+            C->world[y][x] = ' ';
 }
 
 static int appendf(char *dst, int cap, int off, const char *fmt, ...) {
@@ -71,18 +76,17 @@ static int appendf(char *dst, int cap, int off, const char *fmt, ...) {
     return off + n;
 }
 
-
 static int line_end(int off, char *dst, int cap) {
     return appendf(dst, cap, off, "\033[2K\n");
 }
 
-static int render_players_info_to_buf(char *out, int cap, int off) {
+static int render_players_info_to_buf(client_ctx_t *C, char *out, int cap, int off) {
     off = appendf(out, cap, off, "Max hráčov: %d", MAX_CLIENTS);
     off = line_end(off, out, cap);
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (i < game_state.num_players) {
-            Player *p = &game_state.players[i];
+        if (i < C->game_state.num_players) {
+            Player *p = &C->game_state.players[i];
 
             if (!p->alive) {
                 off = appendf(out, cap, off, "Hráč %s je mŕtvy. Skóre: %d", p->name, p->score);
@@ -97,11 +101,11 @@ static int render_players_info_to_buf(char *out, int cap, int off) {
             off = line_end(off, out, cap);
         }
 
-        off = line_end(off, out, cap); // prázdny riadok
+        off = line_end(off, out, cap);
     }
 
-    if (player_id >= 0 && player_id < game_state.num_players) {
-        Player *me = &game_state.players[player_id];
+    if (C->player_id >= 0 && C->player_id < C->game_state.num_players) {
+        Player *me = &C->game_state.players[C->player_id];
         off = appendf(out, cap, off, "== TY ==");
         off = line_end(off, out, cap);
         off = appendf(out, cap, off, "Meno: %s | ID: %d | Skóre: %d",
@@ -113,9 +117,7 @@ static int render_players_info_to_buf(char *out, int cap, int off) {
     return off;
 }
 
-
-
-static int render_world_to_buf(char *out, int cap, int off) {
+static int render_world_to_buf(client_ctx_t *C, char *out, int cap, int off) {
     off = appendf(out, cap, off, "\n╔");
     for (int x = 0; x < WORLD_WIDTH; x++) off = appendf(out, cap, off, "═");
     off = appendf(out, cap, off, "╗");
@@ -124,7 +126,7 @@ static int render_world_to_buf(char *out, int cap, int off) {
     for (int y = 0; y < WORLD_HEIGHT; y++) {
         off = appendf(out, cap, off, "║");
         for (int x = 0; x < WORLD_WIDTH; x++) {
-            char c = world[y][x];
+            char c = C->world[y][x];
             if (c == '.') c = ' ';
             off = appendf(out, cap, off, "%c", c);
         }
@@ -145,87 +147,79 @@ static const char* skip_next_field(const char* p) {
     return q ? (q + 1) : NULL;
 }
 
-void parse_game_state(const char* buffer) {
+static void parse_game_state(client_ctx_t *C, const char* buffer, int *out_got_state) {
     if (strncmp(buffer, "STATE", 5) != 0) return;
 
     int parts[12];
     if (sscanf(buffer, "STATE|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|",
-&parts[0], &parts[1], &parts[2], &parts[3], &parts[4], &parts[5],
-&parts[6], &parts[7], &parts[8], &parts[9], &parts[10], &parts[11]) != 12) {
+               &parts[0], &parts[1], &parts[2], &parts[3], &parts[4], &parts[5],
+               &parts[6], &parts[7], &parts[8], &parts[9], &parts[10], &parts[11]) != 12) {
         return;
     }
 
-    game_state.id = parts[0];
-    game_state.width = parts[1];
-    game_state.height = parts[2];
-    game_state.num_players = parts[3];
-    game_state.fruit_x = parts[4];
-    game_state.fruit_y = parts[5];
-    game_state.active = parts[6];
-    game_state.game_over = parts[7];
-    game_state.num_obstacles = parts[8];
-    game_state.mode = parts[9];
-    game_state.world_type = parts[10];
-    game_state.elapsed_time = parts[11];
+    C->game_state.id = parts[0];
+    C->game_state.width = parts[1];
+    C->game_state.height = parts[2];
+    C->game_state.num_players = parts[3];
+    C->game_state.fruit_x = parts[4];
+    C->game_state.fruit_y = parts[5];
+    C->game_state.active = parts[6];
+    C->game_state.game_over = parts[7];
+    C->game_state.num_obstacles = parts[8];
+    C->game_state.mode = parts[9];
+    C->game_state.world_type = parts[10];
+    C->game_state.elapsed_time = parts[11];
 
-    // posuň ptr ZA 12. číselné pole (elapsed_time) a jeho '|'
     const char* ptr = strchr(buffer, '|');
     for (int i = 0; i < 12 && ptr; i++) ptr = strchr(ptr + 1, '|');
     if (!ptr) return;
-    ptr++; // teraz ptr ukazuje na začiatok ďalšieho segmentu (M| alebo O| alebo P|)
+    ptr++;
 
-    // --- M|<mapa>| (800 znakov) ---
-    // Vymaž world a naplň ho mapou zo servera.
-    clear_world();
+    clear_world(C);
 
     if (ptr && strncmp(ptr, "M|", 2) == 0) {
         ptr += 2;
         const char* end = strchr(ptr, '|');
-        if (end) {
-            int len = (int)(end - ptr);
-            int expected = game_state.width * game_state.height; // typicky 800
+        if (!end) return;
 
-            if (len >= expected) {
-                for (int y = 0; y < game_state.height; y++) {
-                    for (int x = 0; x < game_state.width; x++) {
-                        char c = ptr[y * game_state.width + x];
-                        if (c == '.') c = ' ';
-                        world[y][x] = c;
-                    }
+        int len = (int)(end - ptr);
+        int expected = C->game_state.width * C->game_state.height;
+
+        if (len >= expected) {
+            for (int y = 0; y < C->game_state.height && y < WORLD_HEIGHT; y++) {
+                for (int x = 0; x < C->game_state.width && x < WORLD_WIDTH; x++) {
+                    char c = ptr[y * C->game_state.width + x];
+                    if (c == '.') c = ' ';
+                    C->world[y][x] = c;
                 }
             }
-
-            ptr = end + 1; // za ukončovací '|'
-        } else {
-            return;
         }
+
+        ptr = end + 1;
     }
 
-    // --- O|x|y| ... ---
     int obs_count = 0;
     while (ptr && strncmp(ptr, "O|", 2) == 0 && obs_count < MAX_OBSTACLES) {
         int ox, oy;
         if (sscanf(ptr, "O|%d|%d|", &ox, &oy) == 2) {
-            game_state.obstacles[obs_count][0] = ox;
-            game_state.obstacles[obs_count][1] = oy;
+            C->game_state.obstacles[obs_count][0] = ox;
+            C->game_state.obstacles[obs_count][1] = oy;
             obs_count++;
         }
 
-        // preskoč 3 polia: O|x|y|
-        ptr = skip_next_field(ptr); // za "O"
-        ptr = ptr ? skip_next_field(ptr) : NULL; // za x
-        ptr = ptr ? skip_next_field(ptr) : NULL; // za y
+        ptr = skip_next_field(ptr);
+        ptr = ptr ? skip_next_field(ptr) : NULL;
+        ptr = ptr ? skip_next_field(ptr) : NULL;
     }
-    game_state.num_obstacles = obs_count;
+    C->game_state.num_obstacles = obs_count;
 
-    // --- P|id|name|alive|score|hx|hy|blen|dir| ... ---
     int pl_count = 0;
     while (ptr && strncmp(ptr, "P|", 2) == 0 && pl_count < 10) {
-        Player* p = &game_state.players[pl_count];
+        Player* p = &C->game_state.players[pl_count];
         int id, alive, score, hx, hy, blen, dir;
 
         if (sscanf(ptr, "P|%d|%49[^|]|%d|%d|%d|%d|%d|%d|",
-        &id, p->name, &alive, &score, &hx, &hy, &blen, &dir) == 8) {
+                   &id, p->name, &alive, &score, &hx, &hy, &blen, &dir) == 8) {
             p->id = id;
             p->alive = alive;
             p->score = score;
@@ -236,63 +230,71 @@ void parse_game_state(const char* buffer) {
             pl_count++;
         }
 
-        // preskoč 9 polí: P|id|name|alive|score|hx|hy|blen|dir|
-        ptr = skip_next_field(ptr); // za P
+        ptr = skip_next_field(ptr);
         for (int k = 0; k < 8 && ptr; k++) ptr = skip_next_field(ptr);
     }
-    game_state.num_players = pl_count;
+    C->game_state.num_players = pl_count;
+
+    if (out_got_state) *out_got_state = 1;
 }
 
-void receive_game_state() {
-    if (sock < 0) return;
+static void receive_game_state(client_ctx_t *C, int *out_got_state) {
+    if (!C || C->sock < 0) return;
 
-    static char acc[8192];
+    static char acc[65536];   // veľký buffer
     static int acc_len = 0;
 
     char tmp[BUFFER_SIZE];
     int n;
 
-
-    while ((n = recv(sock, tmp, sizeof(tmp) - 1, MSG_DONTWAIT)) > 0) {
+    while ((n = recv(C->sock, tmp, (int)sizeof(tmp) - 1, MSG_DONTWAIT)) > 0) {
         tmp[n] = '\0';
 
-
         if (acc_len + n >= (int)sizeof(acc) - 1) {
+            // keď pretečie, zahodíme staré (radšej prísť o frame než sa rozbiť)
             acc_len = 0;
         }
 
-        memcpy(acc + acc_len, tmp, n);
+        memcpy(acc + acc_len, tmp, (size_t)n);
         acc_len += n;
         acc[acc_len] = '\0';
     }
 
+    // nič nové
+    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        // socket error
+        return;
+    }
 
     char *line_start = acc;
     while (1) {
         char *nl = strchr(line_start, '\n');
         if (!nl) break;
+
         *nl = '\0';
 
         if (strncmp(line_start, "ASSIGN|", 7) == 0) {
             int id;
             if (sscanf(line_start, "ASSIGN|%d|", &id) == 1) {
-                player_id = id;
+                C->player_id = id;
             }
         } else if (strncmp(line_start, "STATE", 5) == 0) {
-            parse_game_state(line_start);
+            // DEBUG: ukáž, či vôbec prišiel M|
+            // fprintf(stderr, "STATE len=%zu hasM=%d\n", strlen(line_start),
+            //         (strstr(line_start, "M|") != NULL));
+            parse_game_state(C, line_start, out_got_state);
         }
 
         line_start = nl + 1;
     }
 
     int remaining = (int)strlen(line_start);
-    memmove(acc, line_start, remaining);
+    memmove(acc, line_start, (size_t)remaining);
     acc_len = remaining;
     acc[acc_len] = '\0';
 }
 
-
-void show_main_menu() {
+static void show_main_menu(void) {
     printf("\n");
     printf("╔════════════════════════════════════════╗\n");
     printf("║         HADIK - HLAVNE MENU            ║\n");
@@ -303,7 +305,7 @@ void show_main_menu() {
     printf("Vybrať možnosť: ");
 }
 
-void create_new_game() {
+static void create_new_game(client_ctx_t *C) {
     printf("\n╔════════════════════════════════════════╗\n");
     printf("║            NOVA HRA                    ║\n");
     printf("╚════════════════════════════════════════╝\n\n");
@@ -338,65 +340,65 @@ void create_new_game() {
 
     printf("\nSpúšťam server v pozadí...\n");
 
-    server_pid = fork();
-    if (server_pid == 0) {
+    C->server_pid = fork();
+    if (C->server_pid == 0) {
         execl("./server", "server", NULL);
         perror("execl server");
         exit(1);
-    } else if (server_pid < 0) {
+    } else if (C->server_pid < 0) {
         printf("Chyba: Nepodarilo sa spustiť server\n");
         return;
     }
 
     sleep(2);
 
-    if (connect_to_server()) {
+    if (connect_to_server(C)) {
         printf("Zadaj meno hráča: ");
         char name[50];
         fgets(name, 50, stdin);
         name[strcspn(name, "\n")] = 0;
 
-        player_id = -1;
+        C->player_id = -1;
 
         char msg[256];
-        snprintf(msg, 256, "NEW_GAME|%d|%d|%d", mode, world_type, time_limit);
-        send_message(msg);
+        snprintf(msg, sizeof(msg), "NEW_GAME|%d|%d|%d", mode, world_type, time_limit);
+        send_message(C, msg);
 
         usleep(100000);
 
-        snprintf(msg, 256, "PLAYER|%s", name);
-        send_message(msg);
+        snprintf(msg, sizeof(msg), "PLAYER|%s", name);
+        send_message(C, msg);
 
-        in_game = 1;
-          printf("Hra sa spustila!\n");
+        C->in_game = 1;
+        printf("Hra sa spustila!\n");
         sleep(1);
     } else {
         printf("Chyba: Nepodarilo sa pripojiť k serveru\n");
-        if (server_pid > 0) {
-            kill(server_pid, SIGTERM);
+        if (C->server_pid > 0) {
+            kill(C->server_pid, SIGTERM);
         }
     }
 }
 
-void join_existing_game() {
+static void join_existing_game(client_ctx_t *C) {
     printf("\n╔════════════════════════════════════════╗\n");
     printf("║      PRIPOJIT SA K HRE                 ║\n");
     printf("╚════════════════════════════════════════╝\n\n");
     printf("Pokúšam sa pripojiť na localhost:%d\n", PORT);
 
-    if (connect_to_server()) {
+    if (connect_to_server(C)) {
         printf("Zadaj meno hráča: ");
         char name[50];
         fgets(name, 50, stdin);
         name[strcspn(name, "\n")] = 0;
 
-        player_id = -1;
+        C->player_id = -1;
 
         char msg[256];
-        snprintf(msg, 256, "PLAYER|%s", name);
-        send_message(msg);
+        snprintf(msg, sizeof(msg), "PLAYER|%s", name);
+        send_message(C, msg);
 
-        in_game = 1;
+        C->in_game = 1;
         printf("Priradený si sa k hre!\n");
         sleep(1);
     } else {
@@ -413,15 +415,14 @@ static int term_enable_raw(TermGuard *tg) {
     if (tg->orig_flags == -1) tg->orig_flags = 0;
 
     struct termios raw = tg->orig;
-    raw.c_lflag &= ~(ICANON | ECHO);   // bez Enter, bez echo
-    raw.c_cc[VMIN] = 0;               // neblokujúci read
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 0;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) return -1;
 
-    // stdin non-blocking (nepovinné, ale praktické)
     if (fcntl(STDIN_FILENO, F_SETFL, tg->orig_flags | O_NONBLOCK) == -1) {
-        // aj keby to nešlo, raw režim stále funguje; nechaj to tak
+        // ignore
     }
 
     tg->active = 1;
@@ -435,11 +436,11 @@ static void term_restore(TermGuard *tg) {
     tg->active = 0;
 }
 
-void game_loop() {
+static void game_loop(client_ctx_t *C) {
     TermGuard tg;
     int raw_ok = (term_enable_raw(&tg) == 0);
 
-    //vymaž celú obrazovku + schovaj kurzor
+    // clear whole screen + hide cursor once
     printf("\033[2J\033[H\033[?25l");
     fflush(stdout);
 
@@ -447,28 +448,37 @@ void game_loop() {
     int game_active = 1;
     int paused = 0;
 
-    while (in_game && game_active) {
+    while (C->in_game && game_active) {
+        int got_state = 0;
+
+        // ---------- WAIT FOR INPUT OR SOCKET (timeout = FPS) ----------
         fd_set rfds;
         FD_ZERO(&rfds);
 
         int maxfd = STDIN_FILENO;
         FD_SET(STDIN_FILENO, &rfds);
 
-        if (sock >= 0) {
-            FD_SET(sock, &rfds);
-            if (sock > maxfd) maxfd = sock;
+        if (C->sock >= 0) {
+            FD_SET(C->sock, &rfds);
+            if (C->sock > maxfd) maxfd = C->sock;
         }
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 1000000 / FPS;   // synchronizuj s FPS servera
+        tv.tv_usec = 1000000 / FPS;
 
         int rv = select(maxfd + 1, &rfds, NULL, NULL, &tv);
 
-        if (rv > 0 && sock >= 0 && FD_ISSET(sock, &rfds)) {
-            receive_game_state();
+        // ---------- RECEIVE STATE ----------
+        if (rv > 0 && C->sock >= 0 && FD_ISSET(C->sock, &rfds)) {
+            receive_game_state(C, &got_state);
+        } else {
+            // aj keď select neukázal socket, občas môže zostať niečo v buffri
+            // (MSG_DONTWAIT vo vnútri to nezablokuje)
+            receive_game_state(C, &got_state);
         }
 
+        // ---------- INPUT ----------
         char input = 0;
         if (rv > 0 && FD_ISSET(STDIN_FILENO, &rfds)) {
             ssize_t n = read(STDIN_FILENO, &input, 1);
@@ -482,63 +492,82 @@ void game_loop() {
             case 'D': case 'd': if (current_dir != LEFT)  current_dir = RIGHT; break;
             case ' ': paused = !paused; break;
             case 'Q': case 'q': {
-                in_game = 0;
+                C->in_game = 0;
                 game_active = 0;
                 char qmsg[64];
-                snprintf(qmsg, sizeof(qmsg), "QUIT|%d", player_id);
-                send_message(qmsg);
+                snprintf(qmsg, sizeof(qmsg), "QUIT|%d", C->player_id);
+                send_message(C, qmsg);
                 break;
             }
             default:
                 break;
         }
 
-        if (in_game && game_active && !paused && player_id >= 0) {
+        // ---------- SEND MOVE ----------
+        if (C->in_game && game_active && !paused && C->player_id >= 0) {
             char msg[64];
-            snprintf(msg, sizeof(msg), "MOVE|%d|%d", player_id, (int)current_dir);
-            send_message(msg);
+            snprintf(msg, sizeof(msg), "MOVE|%d|%d", C->player_id, (int)current_dir);
+            send_message(C, msg);
         }
 
         // ---------- BUILD FRAME ----------
         static char frame[FRAME_BUF_SIZE];
         int off = 0;
 
-        off = render_players_info_to_buf(frame, sizeof(frame), off);
-        off = render_world_to_buf(frame, sizeof(frame), off);
+        // keď ešte nemáme STATE, aspoň niečo zobraz
+        if (!got_state && C->game_state.width == 0 && C->game_state.height == 0) {
+            off = appendf(frame, (int)sizeof(frame), off, "Čakám na server... (STATE)");
+            off = line_end(off, frame, (int)sizeof(frame));
+            off = appendf(frame, (int)sizeof(frame), off, "player_id: %d", C->player_id);
+            off = line_end(off, frame, (int)sizeof(frame));
+            off = appendf(frame, (int)sizeof(frame), off, "Q=quit, SPACE=pause");
+            off = line_end(off, frame, (int)sizeof(frame));
+        } else {
+            off = render_players_info_to_buf(C, frame, (int)sizeof(frame), off);
+            off = render_world_to_buf(C, frame, (int)sizeof(frame), off);
 
-        if (game_state.num_players > player_id && player_id >= 0) {
-            off = appendf(frame, sizeof(frame), off, "Tvoj hadík: %s", game_state.players[player_id].name);
-            off = line_end(off, frame, sizeof(frame));
-            off = appendf(frame, sizeof(frame), off, "Tvoje body: %d | Čas: %d s",
-                          game_state.players[player_id].score,
-                          game_state.elapsed_time);
-            off = line_end(off, frame, sizeof(frame));
+            if (C->player_id >= 0 && C->player_id < C->game_state.num_players) {
+                off = appendf(frame, (int)sizeof(frame), off, "Tvoj hadík: %s",
+                              C->game_state.players[C->player_id].name);
+                off = line_end(off, frame, (int)sizeof(frame));
+                off = appendf(frame, (int)sizeof(frame), off, "Tvoje body: %d | Čas: %d s",
+                              C->game_state.players[C->player_id].score,
+                              C->game_state.elapsed_time);
+                off = line_end(off, frame, (int)sizeof(frame));
+            }
+
+            off = appendf(frame, (int)sizeof(frame), off,
+                          "Smer (W/S/A/D, SPACE=pause, Q=quit): %s",
+                          paused ? "[PAUSED]" : "");
+            off = line_end(off, frame, (int)sizeof(frame));
         }
 
-        off = appendf(frame, sizeof(frame), off,
-                      "Smer (W/S/A/D, SPACE=pause, Q=quit): %s",
-                      paused ? "[PAUSED]" : "");
-        off = line_end(off, frame, sizeof(frame));
-
-        // ---------- DRAW FRAME ----------
-        clear_screen();                 // \033[H
-        fwrite(frame, 1, off, stdout);
+        // ---------- DRAW FRAME (VŽDY) ----------
+        clear_screen();
+        fwrite(frame, 1, (size_t)off, stdout);
         fflush(stdout);
 
-        if (game_state.game_over) {
-            in_game = 0;
+        if (C->game_state.game_over) {
+            C->in_game = 0;
             game_active = 0;
         }
     }
 
-    // ukáž kurzor späť
     printf("\033[?25h");
     fflush(stdout);
 
     if (raw_ok) term_restore(&tg);
 }
 
-int main() {
+int main(void) {
+    client_ctx_t C;
+    memset(&C, 0, sizeof(C));
+    C.sock = -1;
+    C.player_id = -1;
+    C.in_game = 0;
+    C.server_pid = -1;
+    clear_world(&C);
+
     printf("╔══════════════════════════════╗\n");
     printf("║     VITAJ V HRE HADIK!       ║\n");
     printf("╚══════════════════════════════╝\n\n");
@@ -553,14 +582,14 @@ int main() {
 
         switch (choice) {
             case 1:
-                create_new_game();
-                if (in_game) game_loop();
-                in_game = 0;
+                create_new_game(&C);
+                if (C.in_game) game_loop(&C);
+                C.in_game = 0;
                 break;
             case 2:
-                join_existing_game();
-                if (in_game) game_loop();
-                in_game = 0;
+                join_existing_game(&C);
+                if (C.in_game) game_loop(&C);
+                C.in_game = 0;
                 break;
             case 3:
                 printf("\nZbohom!\n");
@@ -571,10 +600,11 @@ int main() {
         }
     }
 
-    if (sock >= 0) close(sock);
-    if (server_pid > 0) {
-        kill(server_pid, SIGTERM);
-        waitpid(server_pid, NULL, 0);
+    if (C.sock >= 0) close(C.sock);
+    if (C.server_pid > 0) {
+        kill(C.server_pid, SIGTERM);
+        waitpid(C.server_pid, NULL, 0);
     }
     return 0;
 }
+

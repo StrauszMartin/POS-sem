@@ -13,7 +13,7 @@
 #include <signal.h>
 
 #define PORT 22346
-#define BUFFER_SIZE 2048
+#define BUFFER_SIZE 8192
 #define WORLD_WIDTH 40
 #define WORLD_HEIGHT 20
 #define INITIAL_SNAKE_LEN 3
