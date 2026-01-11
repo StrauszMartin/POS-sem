@@ -1,4 +1,0 @@
-/home/strausz/semka2/build/CMakeFiles/server.dir
-/home/strausz/semka2/build/CMakeFiles/client.dir
-/home/strausz/semka2/build/CMakeFiles/edit_cache.dir
-/home/strausz/semka2/build/CMakeFiles/rebuild_cache.dir
