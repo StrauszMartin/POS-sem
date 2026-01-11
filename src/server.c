@@ -330,11 +330,11 @@ void send_game_state(int client_socket) {
         if (strlen(response) + strlen(player_str) + 1 < BUFFER_SIZE)
             strcat(response, player_str);
     }
-
+    strcat(response, "\n");
     send(client_socket, response, strlen(response), 0);
     pthread_mutex_unlock(&game_mutex);
 }
-
+/*
 void handle_client_message(const char* buffer) {
     if (strncmp(buffer, "NEW_GAME", 8) == 0) {
         int mode, world_type, time_limit;
@@ -347,11 +347,6 @@ void handle_client_message(const char* buffer) {
         sscanf(buffer, "PLAYER|%49[^|]", name);
         int assigned = init_snake(game.num_players, name);
 
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].in_use) {
-            send_game_state(clients[i].socket);
-        }
-    }
     } else if (strncmp(buffer, "MOVE", 4) == 0) {
         int pid, dir;
         sscanf(buffer, "MOVE|%d|%d", &pid, &dir);
@@ -365,7 +360,7 @@ void handle_client_message(const char* buffer) {
             fprintf(stderr, "[SERVER] Hráč %d opustil hru\n", pid);
         }
     }
-}
+}*/
 
 static int find_client_index_by_socket(int s) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -404,7 +399,7 @@ void* client_handler(void* arg) {
 
             if (assigned >= 0) {
                 char msg[64];
-                snprintf(msg, sizeof(msg), "ASSIGN|%d|", assigned);
+                snprintf(msg, sizeof(msg), "ASSIGN|%d|\n", assigned);
                 send(client_socket, msg, strlen(msg), 0);
             }
 

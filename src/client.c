@@ -218,22 +218,51 @@ void parse_game_state(const char* buffer) {
 void receive_game_state() {
     if (sock < 0) return;
 
-    char buffer[BUFFER_SIZE];
-    int n = recv(sock, buffer, BUFFER_SIZE - 1, 0);
-    if (n > 0) {
-        buffer[n] = '\0';
+    static char acc[8192];
+    static int acc_len = 0;
 
-        if (strncmp(buffer, "ASSIGN|", 7) == 0) {
-            int id;
-            if (sscanf(buffer, "ASSIGN|%d|", &id) == 1) {
-                player_id = id;
-            }
-            return;
+    char tmp[BUFFER_SIZE];
+    int n;
+
+
+    while ((n = recv(sock, tmp, sizeof(tmp) - 1, MSG_DONTWAIT)) > 0) {
+        tmp[n] = '\0';
+
+
+        if (acc_len + n >= (int)sizeof(acc) - 1) {
+            acc_len = 0;
         }
 
-        parse_game_state(buffer);
+        memcpy(acc + acc_len, tmp, n);
+        acc_len += n;
+        acc[acc_len] = '\0';
     }
+
+
+    char *line_start = acc;
+    while (1) {
+        char *nl = strchr(line_start, '\n');
+        if (!nl) break;
+        *nl = '\0';
+
+        if (strncmp(line_start, "ASSIGN|", 7) == 0) {
+            int id;
+            if (sscanf(line_start, "ASSIGN|%d|", &id) == 1) {
+                player_id = id;
+            }
+        } else if (strncmp(line_start, "STATE", 5) == 0) {
+            parse_game_state(line_start);
+        }
+
+        line_start = nl + 1;
+    }
+
+    int remaining = (int)strlen(line_start);
+    memmove(acc, line_start, remaining);
+    acc_len = remaining;
+    acc[acc_len] = '\0';
 }
+
 
 void show_main_menu() {
     printf("\n");
@@ -283,7 +312,7 @@ void create_new_game() {
 
     server_pid = fork();
     if (server_pid == 0) {
-        chdir("/src");
+        chdir("cmake-build-debug-wsl");
         execl("./server", "server", NULL);
         perror("execl server");
         exit(1);
@@ -452,11 +481,12 @@ void game_loop() {
         }
 
         // 5) kontinuálny pohyb: posielaj MOVE každý tick, iba keď nie je pauza
-        if (in_game && game_active && !paused) {
+        if (in_game && game_active && !paused && player_id >= 0) {
             char msg[100];
             snprintf(msg, sizeof(msg), "MOVE|%d|%d", player_id, (int)current_dir);
             send_message(msg);
         }
+
 
         // 6) render
         clear_screen();
