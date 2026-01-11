@@ -312,7 +312,6 @@ void create_new_game() {
 
     server_pid = fork();
     if (server_pid == 0) {
-        chdir("cmake-build-debug-wsl");
         execl("./server", "server", NULL);
         perror("execl server");
         exit(1);
